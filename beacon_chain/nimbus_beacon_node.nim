@@ -906,6 +906,7 @@ proc initFullNode(
                          getBeaconTime, node.beaconClock, blockProcessor,
                          validatorCustody, quarantine,
                          fuluColumnQuarantine, gloasColumnQuarantine,
+                         envelopeQuarantine,
                          node.eventBus.blockGossipPeerQueue,
                          node.eventBus.blocksQueue,
                          node.eventBus.finalQueue)
