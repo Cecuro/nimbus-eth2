@@ -161,6 +161,8 @@ ifeq ($(USE_LIBBACKTRACE), 0)
 NIM_PARAMS += -d:disable_libbacktrace
 endif
 
+NIM_PARAMS += -d:chronosSyncContinuations:1
+
 deps: | deps-common nat-libs build/generate_makefile
 
 #- deletes binaries that might need to be rebuilt after a Git pull
