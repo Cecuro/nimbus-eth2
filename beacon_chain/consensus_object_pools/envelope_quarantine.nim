@@ -45,18 +45,19 @@ type
       ## to the quarantine.
 
 proc init*(T: typedesc[EnvelopeQuarantine]): T =
+  let missingEvent = newAsyncEvent()
   T(
     orphans: OrphanLru.init(MaxOrphans),
     unviable: UnviableLru.init(MaxUnviables),
-    missing: MissingTable.init(),
-    missingEvent: newAsyncEvent()
+    missing: MissingTable.init(missingEvent),
+    missingEvent: missingEvent
   )
 
 proc addMissing*(self: var EnvelopeQuarantine, root: Eth2Digest) =
   self.missing.add(root)
   self.missingEvent.fire()
 
-func checkMissing*(self: var EnvelopeQuarantine, max: int): seq[FetchRecord] =
+proc checkMissing*(self: var EnvelopeQuarantine, max: int): seq[FetchRecord] =
   self.missing.checkMissing(max)
 
 func cleanupOrphans(self: var EnvelopeQuarantine, finalizedSlot: Slot) =
@@ -100,7 +101,7 @@ func delOrphan*(self: var EnvelopeQuarantine, blck: gloas.SignedBeaconBlock) =
   for k in toDel:
     self.orphans.del k
 
-func remove*(self: var EnvelopeQuarantine, root: Eth2Digest) =
+proc remove*(self: var EnvelopeQuarantine, root: Eth2Digest) =
   var toDel: seq[(Eth2Digest, uint64)]
   for k, _ in self.orphans:
     if k[0] == root:
@@ -109,6 +110,6 @@ func remove*(self: var EnvelopeQuarantine, root: Eth2Digest) =
     self.orphans.del k
   self.missing.del(root)
 
-func addUnviable*(self: var EnvelopeQuarantine, root: Eth2Digest) =
+proc addUnviable*(self: var EnvelopeQuarantine, root: Eth2Digest) =
   self.remove(root)
   self.unviable.put(root, ())

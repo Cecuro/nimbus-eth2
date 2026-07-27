@@ -95,27 +95,28 @@ type
 
     missingEvent*: AsyncEvent
       ## This asynchronous event is triggered when a new orphaned block is added
-      ## to the quarantine.
+      ## to or removed from quarantine.
 
     sidecarlessEvent*: AsyncEvent
       ## This asynchronous event is triggered when a new block without sidecars
-      ## is added to the quarantine.
+      ## is added to or removed from quarantine.
 
     cfg*: RuntimeConfig
 
 func init*(T: type Quarantine, cfg: RuntimeConfig): T =
+  let missingEvent = newAsyncEvent()
   T(
     cfg: cfg,
     orphans: OrphanLru.init(MaxOrphans),
     sidecarless: SidecarlessLru.init(MaxSidecarless),
     unviable: UnviableLru.init(MaxUnviables),
     latest_sidecar_signatures: RecentSidecarSignatureLru.init(MaxRecentSidecarSignatures),
-    missing: MissingTable.init(),
-    missingEvent: newAsyncEvent(),
+    missing: MissingTable.init(missingEvent),
+    missingEvent: missingEvent,
     sidecarlessEvent: newAsyncEvent()
   )
 
-func checkMissing*(quarantine: var Quarantine, max: int): seq[FetchRecord] =
+proc checkMissing*(quarantine: var Quarantine, max: int): seq[FetchRecord] =
   ## Return a list of blocks that we should try to resolve from other client -
   ## to be called periodically but not too often (once per slot?)
   quarantine.missing.checkMissing(max)
@@ -158,17 +159,17 @@ proc addMissing*(quarantine: var Quarantine, root: Eth2Digest): Result[void, Unv
     # Add if it's not there, but don't update missing counter
     if not found:
       quarantine.missing.add(r)
-      quarantine.missingEvent.fire()
       break
 
   ok()
 
-func remove*(quarantine: var Quarantine, signedBlock: ForkySignedBeaconBlock) =
+proc remove*(quarantine: var Quarantine, signedBlock: ForkySignedBeaconBlock) =
   quarantine.orphans.del((signedBlock.root, signedBlock.signature))
-  quarantine.sidecarless.del(signedBlock.root)
   quarantine.missing.del(signedBlock.root)
+  if quarantine.sidecarless.pop(signedBlock.root).isSome():
+    quarantine.sidecarlessEvent.fire()
 
-func startProcessing*(quarantine: var Quarantine, signedBlock: ForkySignedBeaconBlock) =
+proc startProcessing*(quarantine: var Quarantine, signedBlock: ForkySignedBeaconBlock) =
   quarantine.remove(signedBlock)
   quarantine.processing = signedBlock.root
 
@@ -231,7 +232,7 @@ func removeUnviableSidecarlessTree(
 
     toRemove.setLen(0)
 
-func addUnviable*(quarantine: var Quarantine, root: Eth2Digest, kind: UnviableKind): UnviableKind =
+proc addUnviable*(quarantine: var Quarantine, root: Eth2Digest, kind: UnviableKind): UnviableKind =
   # Unviable - don't try to download again!
   quarantine.missing.del(root)
 
@@ -251,7 +252,7 @@ func addUnviable*(quarantine: var Quarantine, root: Eth2Digest, kind: UnviableKi
   quarantine.unviable.put(root, kind)
   kind
 
-func cleanupOrphans(quarantine: var Quarantine, finalizedSlot: Slot) =
+proc cleanupOrphans(quarantine: var Quarantine, finalizedSlot: Slot) =
   var toDel: seq[(Eth2Digest, ValidatorSig)]
 
   for k, v in quarantine.orphans:
@@ -262,7 +263,7 @@ func cleanupOrphans(quarantine: var Quarantine, finalizedSlot: Slot) =
     discard quarantine.addUnviable(k[0], UnviableKind.UnviableFork)
     quarantine.orphans.del k
 
-func cleanupSidecarless(quarantine: var Quarantine, finalizedSlot: Slot) =
+proc cleanupSidecarless(quarantine: var Quarantine, finalizedSlot: Slot) =
   var toDel: seq[Eth2Digest]
 
   for k, v in quarantine.sidecarless:
@@ -273,13 +274,16 @@ func cleanupSidecarless(quarantine: var Quarantine, finalizedSlot: Slot) =
     discard quarantine.addUnviable(k, UnviableKind.UnviableFork)
     quarantine.sidecarless.del k
 
-func clearAfterReorg*(quarantine: var Quarantine) =
+  if len(toDel) > 0:
+    quarantine.sidecarlessEvent.fire()
+
+proc clearAfterReorg*(quarantine: var Quarantine) =
   ## Clear missing and orphans to start with a fresh slate in case of a reorg
   ## Unviables remain unviable and are not cleared.
   quarantine.missing.resetItems()
   quarantine.orphans.reset()
 
-func pruneAfterFinalization*(quarantine: var Quarantine, epoch: Epoch) =
+proc pruneAfterFinalization*(quarantine: var Quarantine, epoch: Epoch) =
   quarantine.cleanupSidecarless(epoch.start_slot())
 
 # Typically, blocks will arrive in mostly topological order, with some
@@ -328,7 +332,8 @@ proc addOrphan*(
   ):
     if evicted:
       # When an orphan gets evicted, also evict the sidecars
-      quarantine.sidecarless.del key[0]
+      if quarantine.sidecarless.pop(key[0]).isSome():
+        quarantine.sidecarlessEvent.fire()
 
   ok()
 
@@ -364,6 +369,8 @@ iterator popSidecarlessBlocks*(
   defer: # Run even if iterator is not carried to termination
     for k in toRemove:
       quarantine.sidecarless.del k
+    if len(toRemove) > 0:
+      quarantine.sidecarlessEvent.fire()
 
   for k, v in quarantine.sidecarless.mpairs():
     if v.parent_root == root:
@@ -411,15 +418,16 @@ func popSidecarless*(
 ): Opt[ForkedSignedBeaconBlock] =
   quarantine.sidecarless.pop(root)
 
-func removeSidecarless*(
+proc removeSidecarless*(
     quarantine: var Quarantine, root: Eth2Digest
 ): bool =
   ## Remove the sidecarless entry for ``root`` if present.
   ## Returns true if an entry existed and was removed.
-  if not quarantine.sidecarless.contains(root):
-    return false
-  quarantine.sidecarless.del(root)
-  true
+  if quarantine.sidecarless.pop(root).isSome():
+    quarantine.sidecarlessEvent.fire()
+    true
+  else:
+    false
 
 func getSidecarless*(
     quarantine: var Quarantine, root: Eth2Digest
