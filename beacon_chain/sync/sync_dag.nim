@@ -7,7 +7,7 @@
 
 {.push raises: [].}
 
-import std/[sets, tables, strutils, hashes, algorithm]
+import std/[sets, tables, strutils, hashes, algorithm, deques]
 import stew/base10, chronos, chronicles, results
 import ../spec/[forks, block_id, column_map]
 import ../consensus_object_pools/blockchain_dag
@@ -77,6 +77,10 @@ proc pop*(rq: var RootQueue): Eth2Digest =
 proc clear*(rq: var RootQueue) =
   rq.queue.clear()
   rq.roots.clear()
+
+iterator items*(rq: RootQueue): Eth2Digest =
+  for item in rq.queue.items():
+    yield item
 
 func isExpired(s: SyncDagEntryRef, currentTime: Moment): bool =
   doAssert(not(isNil(s)))
@@ -536,6 +540,29 @@ func decreaseBlocksCount*[A](entry: PeerEntryRef[A]) =
     return
   entry.maxBlocksPerRequest = entry.maxBlocksPerRequest div 2
 
+proc jsonLog*[A](entry: PeerEntryRef[A]): string =
+  let
+    backBlockSlot =
+      if entry.minBackBlockSlot.isSome():
+        $entry.minBackBlockSlot.get()
+      else:
+        "not available"
+    backCarSlot =
+      if entry.minBackCarSlot.isSome():
+        $entry.minBackCarSlot.get()
+      else:
+        "not available"
+    pendingRoots =
+      "[" & entry.pendingRoots.toSeq().mapIt(shortLog(it)).join(",") & "]"
+
+  "{\"peer\":\"" & shortLog(entry.peer) &
+  "\",\"min_backfilll_block_slot\":\"" & backBlockSlot &
+  "\",\"min_backfilll_sidecar_slot\":\"" & backCarSlot &
+  "\",\"max_blocks_per_request\":" & $entry.maxBlocksPerRequest &
+  ",\"max_sidecars_per_request\":" & $entry.maxSidecarsPerRequest &
+  ",\"max_envelopes_per_request\":" & $entry.maxEnvelopesPerRequest &
+  ",\"pending_roots\":" & pendingRoots & "}"
+
 proc debugJsonDump*(sdag: SyncDag, dag: ChainDAGRef): string =
   var
     res: seq[tuple[bid: BlockId, item: string]]
@@ -578,6 +605,9 @@ proc debugJsonDump*(sdag: SyncDag, dag: ChainDAGRef): string =
   let
     sminSlot = if minSlot.isNone(): "not available" else: $minSlot.get()
     smaxSlot = if maxSlot.isNone(): "not available" else: $maxSlot.get()
+    speers =
+      sdag.peers.values().toSeq().mapIt(jsonLog(it)).join(",")
   "{\"min_slot\":\"" & sminSlot &
     "\",\"max_slot\":\"" & smaxSlot &
-    "\",\"records\":[" & res.mapIt(it.item).join(",") & "]}"
+    "\",\"records\":[" & res.mapIt(it.item).join(",") &
+    "],\"peers\":[" & speers & "]}"
