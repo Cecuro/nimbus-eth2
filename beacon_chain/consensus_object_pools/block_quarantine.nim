@@ -17,7 +17,7 @@ import
 
 export tables, minilru, forks, quarantine_types
 
-from std/sequtils import mapIt
+from std/sequtils import toSeq, mapIt
 from std/strutils import join
 
 const
@@ -513,19 +513,16 @@ func debugOrphansJsonDump*(q: var Quarantine): string =
     ",\"items\":[" &
     res.mapIt("\"" & shortLog(it) & "\"").join(",") & "]}"
 
-func debugMissingJsonDump*(q: var Quarantine): string =
-  var res: seq[Eth2Digest]
-  for k, v in q.missing.items.mpairs():
-    res.add(k)
+func debugMissingJsonDump*(q: Quarantine): string =
+  let res =
+    q.missing.items.keys().toSeq().mapIt("\"" & shortLog(it) & "\"").join(",")
   "{\"count\":" & $len(q.missing.items) &
     ",\"max_missing_items\":" & $q.missing.maxCapacity &
-    ",\"items\":[" &
-    res.mapIt("\"" & shortLog(it) & "\"").join(",") & "]}"
+    ",\"items\":[" & res & "]}"
 
 func debugUnviablesJsonDump*(q: var Quarantine): string =
-  var res: seq[string]
-  for k, v in q.unviable.mpairs():
-    res.add("\"" & shortLog(k) & ":\"" &  $v & "\"")
+  let res =
+    q.unviable.keys().toSeq().mapIt("\"" & shortLog(it) & "\"").join(",")
   "{\"count\":" & $len(q.unviable) &
-    ",\"max_unviables_items\":" & $MaxUnviables &
-    ",\"items\":{" & res.join(",") & "}}"
+    ",\"max_unviable_items\":" & $MaxUnviables &
+    ",\"items\":[" & res & "]}"

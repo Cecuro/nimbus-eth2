@@ -15,6 +15,9 @@ import
 
 export tables, minilru, forks, quarantine_types
 
+from std/sequtils import toSeq, mapIt
+from std/strutils import join
+
 const
   MaxOrphans = int(SLOTS_PER_EPOCH * 3)
     ## Set to same as max block orphans
@@ -113,3 +116,47 @@ proc remove*(self: var EnvelopeQuarantine, root: Eth2Digest) =
 proc addUnviable*(self: var EnvelopeQuarantine, root: Eth2Digest) =
   self.remove(root)
   self.unviable.put(root, ())
+
+func jsonLog*(envelope: gloas.SignedExecutionPayloadEnvelope): string =
+  $envelope.message.payload.slot_number & "@" &
+    shortLog(envelope.message.beacon_block_root) & ">" &
+    shortLog(envelope.message.parent_beacon_block_root)
+
+func debugMissingJsonDump*(q: EnvelopeQuarantine): string =
+  let res =
+    q.missing.items.keys().toSeq().mapIt("\"" & shortLog(it) & "\"").join(",")
+  "{\"count\":" & $len(q.missing.items) & ",\"items\":[" & res & "]}"
+
+func debugUnviablesJsonDump*(q: EnvelopeQuarantine): string =
+  let res =
+    q.unviable.keys().toSeq().mapIt("\"" & shortLog(it) & "\"").join(",")
+  "{\"count\":" & $len(q.unviable) & ",\"items\":[" & res & "]}"
+
+func debugOrphansJsonDump*(q: EnvelopeQuarantine): string =
+  var
+    res: seq[string]
+    minBlockSlot = FAR_FUTURE_SLOT
+    maxBlockSlot = GENESIS_SLOT
+
+  for value in q.orphans.values():
+    let slot = value.message.payload.slot_number
+    if slot < minBlockSlot:
+      minBlockSlot = slot
+    if slot > maxBlockSlot:
+      maxBlockSlot = slot
+    res.add("\"" & jsonLog(value) & "\"")
+
+  let
+    sminBlockSlot = if len(q.orphans) == 0: "not available" else: $minBlockSlot
+    smaxBlockSlot = if len(q.orphans) == 0: "not available" else: $maxBlockSlot
+
+  "{\"count\":" & $len(q.orphans) &
+    ",\"max_orphans_items\":" & $MaxOrphans &
+    ",\"min_block_slot\":\"" & sminBlockSlot & "\"" &
+    ",\"max_block_slot\":\"" & smaxBlockSlot & "\"" &
+    ",\"items\":[" & res.join(",") & "]}"
+
+func debugJsonDump*(q: EnvelopeQuarantine): string =
+  "{\"orphans\":" & q.debugOrphansJsonDump() &
+    ",\"missing\":" & q.debugMissingJsonDump() &
+    ",\"unviable\":" & q.debugUnviablesJsonDump() & "}"
